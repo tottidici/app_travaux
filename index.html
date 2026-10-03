@@ -1,0 +1,355 @@
+<!DOCTYPE html>
+<html lang="fr">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+  <title>Carnet d'Entretien & Travaux</title>
+  <script src="https://cdn.tailwindcss.com"></script>
+  <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
+  <style>
+    body { -webkit-tap-highlight-color: transparent; }
+    .pb-safe { padding-bottom: env(safe-area-inset-bottom, 16px); }
+  </style>
+</head>
+<body class="bg-slate-900 text-slate-100 min-h-screen flex flex-col font-sans">
+
+  <!-- Header -->
+  <header class="bg-slate-800 border-b border-slate-700 p-4 sticky top-0 z-20 flex justify-between items-center">
+    <h1 class="text-lg font-bold text-emerald-400 flex items-center gap-2">
+      <i class="fa-solid font-black fa-wrench"></i> Carnet Travaux & Auto
+    </h1>
+    <span id="active-property-badge" class="text-xs bg-slate-700 text-slate-300 px-2.5 py-1 rounded-full border border-slate-600">
+      Tous les biens
+    </span>
+  </header>
+
+  <!-- Contenu Principal -->
+  <main class="flex-1 p-4 pb-24 max-w-lg mx-auto w-full">
+
+    <!-- ONGLET 1: HISTORIQUE -->
+    <section id="tab-history" class="space-y-4">
+      <div class="flex gap-2">
+        <input type="text" id="search-input" placeholder="Rechercher artisan, travaux..." class="w-full bg-slate-800 border border-slate-700 rounded-xl px-3 py-2 text-sm text-slate-100 focus:outline-none focus:border-emerald-500">
+        <select id="filter-property" class="bg-slate-800 border border-slate-700 rounded-xl px-2 py-2 text-sm text-slate-100 focus:outline-none focus:border-emerald-500">
+          <option value="all">Tous les biens</option>
+        </select>
+      </div>
+
+      <div id="records-list" class="space-y-3">
+        <!-- Les interventions seront injectées ici -->
+      </div>
+    </section>
+
+    <!-- ONGLET 2: NOUVELLE INTERVENTION -->
+    <section id="tab-add" class="hidden space-y-4">
+      <h2 class="text-md font-semibold text-slate-200">Ajouter une intervention</h2>
+      <form id="entry-form" class="space-y-3 bg-slate-800 p-4 rounded-2xl border border-slate-700">
+        
+        <div>
+          <label class="block text-xs font-medium text-slate-400 mb-1">Catégorie</label>
+          <div class="grid grid-cols-2 gap-2">
+            <button type="button" id="cat-maison" onclick="setCategory('Maison')" class="p-2.5 rounded-xl border border-emerald-500 bg-emerald-500/10 text-emerald-400 font-medium text-sm flex items-center justify-center gap-2">
+              <i class="fa-solid fa-house"></i> Maison
+            </button>
+            <button type="button" id="cat-voiture" onclick="setCategory('Voiture')" class="p-2.5 rounded-xl border border-slate-700 bg-slate-900 text-slate-400 font-medium text-sm flex items-center justify-center gap-2">
+              <i class="fa-solid fa-car"></i> Voiture
+            </button>
+          </div>
+        </div>
+
+        <div>
+          <label class="block text-xs font-medium text-slate-400 mb-1">Bien / Véhicule concerné</label>
+          <select id="entry-property" class="w-full bg-slate-900 border border-slate-700 rounded-xl p-2.5 text-sm text-slate-100 focus:outline-none focus:border-emerald-500" required>
+            <!-- Rempli dynamiquement -->
+          </select>
+        </div>
+
+        <div>
+          <label class="block text-xs font-medium text-slate-400 mb-1">Titre du travail / Réparation</label>
+          <input type="text" id="entry-title" placeholder="ex: Vidange moteur, Peinture salon" class="w-full bg-slate-900 border border-slate-700 rounded-xl p-2.5 text-sm text-slate-100 focus:outline-none focus:border-emerald-500" required>
+        </div>
+
+        <div class="grid grid-cols-2 gap-2">
+          <div>
+            <label class="block text-xs font-medium text-slate-400 mb-1">Date</label>
+            <input type="date" id="entry-date" class="w-full bg-slate-900 border border-slate-700 rounded-xl p-2.5 text-sm text-slate-100 focus:outline-none focus:border-emerald-500" required>
+          </div>
+          <div>
+            <label class="block text-xs font-medium text-slate-400 mb-1">Montant (€)</label>
+            <input type="number" id="entry-amount" placeholder="0.00" step="0.01" class="w-full bg-slate-900 border border-slate-700 rounded-xl p-2.5 text-sm text-slate-100 focus:outline-none focus:border-emerald-500">
+          </div>
+        </div>
+
+        <div>
+          <label class="block text-xs font-medium text-slate-400 mb-1">Artisan / Garage / Magasin</label>
+          <input type="text" id="entry-artisan" placeholder="ex: Garage Central, Castorama" class="w-full bg-slate-900 border border-slate-700 rounded-xl p-2.5 text-sm text-slate-100 focus:outline-none focus:border-emerald-500">
+        </div>
+
+        <div>
+          <label class="block text-xs font-medium text-slate-400 mb-1">Commentaires / Remarques</label>
+          <textarea id="entry-notes" rows="2" placeholder="Détails de l'intervention, garantie..." class="w-full bg-slate-900 border border-slate-700 rounded-xl p-2.5 text-sm text-slate-100 focus:outline-none focus:border-emerald-500"></textarea>
+        </div>
+
+        <button type="submit" class="w-full bg-emerald-500 hover:bg-emerald-600 text-slate-950 font-bold py-3 rounded-xl shadow-lg transition mt-2">
+          Enregistrer l'intervention
+        </button>
+      </form>
+    </section>
+
+    <!-- ONGLET 3: STATISTIQUES -->
+    <section id="tab-stats" class="hidden space-y-4">
+      <h2 class="text-md font-semibold text-slate-200">Synthèse des dépenses</h2>
+      <div class="grid grid-cols-2 gap-3">
+        <div class="bg-slate-800 p-4 rounded-2xl border border-slate-700">
+          <span class="text-xs text-slate-400">Total Travaux</span>
+          <p id="stat-total" class="text-xl font-bold text-emerald-400 mt-1">0 €</p>
+        </div>
+        <div class="bg-slate-800 p-4 rounded-2xl border border-slate-700">
+          <span class="text-xs text-slate-400">Interventions</span>
+          <p id="stat-count" class="text-xl font-bold text-slate-100 mt-1">0</p>
+        </div>
+      </div>
+      <div class="bg-slate-800 p-4 rounded-2xl border border-slate-700 space-y-3">
+        <h3 class="text-sm font-medium text-slate-300">Dépenses par bien</h3>
+        <div id="stats-by-property" class="space-y-2 text-sm text-slate-400">
+          <!-- Injecté par JS -->
+        </div>
+      </div>
+    </section>
+
+    <!-- ONGLET 4: BIENS & CONFIGURATION (REMPLACE KDRIVE) -->
+    <section id="tab-config" class="hidden space-y-4">
+      <h2 class="text-md font-semibold text-slate-200">Gestion de mes Biens</h2>
+
+      <!-- Formulaire d'ajout de bien -->
+      <form id="property-form" class="bg-slate-800 p-4 rounded-2xl border border-slate-700 space-y-3">
+        <h3 class="text-sm font-medium text-emerald-400">Ajouter une maison ou un véhicule</h3>
+        <div class="grid grid-cols-2 gap-2">
+          <select id="prop-type" class="bg-slate-900 border border-slate-700 rounded-xl p-2.5 text-sm text-slate-100">
+            <option value="Maison">Maison / Immeuble</option>
+            <option value="Voiture">Véhicule / Auto</option>
+          </select>
+          <input type="text" id="prop-name" placeholder="Nom (ex: Clio 4, Chalet)" class="bg-slate-900 border border-slate-700 rounded-xl p-2.5 text-sm text-slate-100" required>
+        </div>
+        <button type="submit" class="w-full bg-slate-700 hover:bg-slate-600 text-slate-100 font-medium py-2 rounded-xl text-sm transition">
+          + Ajouter ce bien
+        </button>
+      </form>
+
+      <!-- Liste des biens -->
+      <div class="bg-slate-800 p-4 rounded-2xl border border-slate-700 space-y-2">
+        <h3 class="text-sm font-medium text-slate-300">Biens enregistrés</h3>
+        <div id="properties-list" class="space-y-2">
+          <!-- Injecté par JS -->
+        </div>
+      </div>
+
+      <!-- Export & Sauvegarde kDrive -->
+      <div class="bg-slate-800 p-4 rounded-2xl border border-slate-700 space-y-3 mt-6">
+        <h3 class="text-sm font-medium text-slate-300 flex items-center gap-2">
+          <i class="fa-solid fa-cloud text-emerald-400"></i> Sauvegarde kDrive
+        </h3>
+        <p class="text-xs text-slate-400">Exportez vos données au format JSON pour les conserver sur votre espace kDrive Infomaniak.</p>
+        <button onclick="exportData()" class="w-full bg-emerald-500/10 border border-emerald-500/30 text-emerald-400 font-medium py-2 rounded-xl text-sm flex items-center justify-center gap-2">
+          <i class="fa-solid fa-download"></i> Télécharger la sauvegarde
+        </button>
+      </div>
+    </section>
+
+  </main>
+
+  <!-- NAVIGATION DU BAS (4 ONGLETS) -->
+  <nav class="fixed bottom-0 left-0 right-0 bg-slate-800/95 backdrop-blur border-t border-slate-700 p-2 pb-safe z-30">
+    <div class="max-w-lg mx-auto grid grid-cols-4 gap-1 text-center">
+      <button onclick="switchTab('history')" id="nav-history" class="p-2 text-emerald-400 flex flex-col items-center gap-1">
+        <i class="fa-solid fa-list-check text-lg"></i>
+        <span class="text-[10px] font-medium">Historique</span>
+      </button>
+      <button onclick="switchTab('add')" id="nav-add" class="p-2 text-slate-400 flex flex-col items-center gap-1">
+        <i class="fa-solid fa-circle-plus text-lg"></i>
+        <span class="text-[10px] font-medium">Saisir</span>
+      </button>
+      <button onclick="switchTab('stats')" id="nav-stats" class="p-2 text-slate-400 flex flex-col items-center gap-1">
+        <i class="fa-solid fa-chart-pie text-lg"></i>
+        <span class="text-[10px] font-medium">Stats</span>
+      </button>
+      <button onclick="switchTab('config')" id="nav-config" class="p-2 text-slate-400 flex flex-col items-center gap-1">
+        <i class="fa-solid fa-sliders text-lg"></i>
+        <span class="text-[10px] font-medium">Biens & Config</span>
+      </button>
+    </div>
+  </nav>
+
+  <script>
+    // État de l'application
+    let currentCategory = 'Maison';
+    let properties = JSON.parse(localStorage.getItem('app_properties')) || [
+      { id: '1', name: 'Maison Principale', type: 'Maison' },
+      { id: '2', name: 'Véhicule Principal', type: 'Voiture' }
+    ];
+    let records = JSON.parse(localStorage.getItem('app_records')) || [];
+
+    // Initialisation
+    document.addEventListener('DOMContentLoaded', () => {
+      document.getElementById('entry-date').valueAsDate = new Date();
+      renderProperties();
+      renderRecords();
+      renderStats();
+    });
+
+    function saveState() {
+      localStorage.setItem('app_properties', JSON.stringify(properties));
+      localStorage.setItem('app_records', JSON.stringify(records));
+    }
+
+    // Gestion des onglets
+    function switchTab(tab) {
+      ['history', 'add', 'stats', 'config'].forEach(t => {
+        document.getElementById(`tab-${t}`).classList.add('hidden');
+        document.getElementById(`nav-${t}`).className = "p-2 text-slate-400 flex flex-col items-center gap-1";
+      });
+      document.getElementById(`tab-${tab}`).classList.remove('hidden');
+      document.getElementById(`nav-${tab}`).className = "p-2 text-emerald-400 flex flex-col items-center gap-1";
+    }
+
+    function setCategory(cat) {
+      currentCategory = cat;
+      const btnM = document.getElementById('cat-maison');
+      const btnV = document.getElementById('cat-voiture');
+      
+      if(cat === 'Maison') {
+        btnM.className = "p-2.5 rounded-xl border border-emerald-500 bg-emerald-500/10 text-emerald-400 font-medium text-sm flex items-center justify-center gap-2";
+        btnV.className = "p-2.5 rounded-xl border border-slate-700 bg-slate-900 text-slate-400 font-medium text-sm flex items-center justify-center gap-2";
+      } else {
+        btnV.className = "p-2.5 rounded-xl border border-emerald-500 bg-emerald-500/10 text-emerald-400 font-medium text-sm flex items-center justify-center gap-2";
+        btnM.className = "p-2.5 rounded-xl border border-slate-700 bg-slate-900 text-slate-400 font-medium text-sm flex items-center justify-center gap-2";
+      }
+      updatePropertySelect();
+    }
+
+    // Rendu des Biens & Selects
+    function updatePropertySelect() {
+      const select = document.getElementById('entry-property');
+      const filtered = properties.filter(p => p.type === currentCategory);
+      select.innerHTML = filtered.map(p => `<option value="${p.name}">${p.name}</option>`).join('');
+    }
+
+    function renderProperties() {
+      const list = document.getElementById('properties-list');
+      const filterSelect = document.getElementById('filter-property');
+
+      list.innerHTML = properties.map(p => `
+        <div class="flex justify-between items-center bg-slate-900 p-2.5 rounded-xl border border-slate-700/50">
+          <span class="text-sm text-slate-200 flex items-center gap-2">
+            <i class="fa-solid ${p.type === 'Maison' ? 'fa-house text-emerald-400' : 'fa-car text-blue-400'}"></i> ${p.name}
+          </span>
+          <button onclick="deleteProperty('${p.id}')" class="text-xs text-rose-400 hover:text-rose-300 p-1">
+            <i class="fa-solid fa-trash"></i>
+          </button>
+        </div>
+      `).join('');
+
+      filterSelect.innerHTML = `<option value="all">Tous les biens</option>` + 
+        properties.map(p => `<option value="${p.name}">${p.name}</option>`).join('');
+
+      updatePropertySelect();
+    }
+
+    // Ajout d'un bien
+    document.getElementById('property-form').addEventListener('submit', (e) => {
+      e.preventDefault();
+      const name = document.getElementById('prop-name').value;
+      const type = document.getElementById('prop-type').value;
+      
+      properties.push({ id: Date.now().toString(), name, type });
+      saveState();
+      renderProperties();
+      document.getElementById('prop-name').value = '';
+    });
+
+    function deleteProperty(id) {
+      properties = properties.filter(p => p.id !== id);
+      saveState();
+      renderProperties();
+    }
+
+    // Ajout d'une intervention
+    document.getElementById('entry-form').addEventListener('submit', (e) => {
+      e.preventDefault();
+      const newRecord = {
+        id: Date.now().toString(),
+        category: currentCategory,
+        property: document.getElementById('entry-property').value,
+        title: document.getElementById('entry-title').value,
+        date: document.getElementById('entry-date').value,
+        amount: parseFloat(document.getElementById('entry-amount').value) || 0,
+        artisan: document.getElementById('entry-artisan').value,
+        notes: document.getElementById('entry-notes').value
+      };
+
+      records.unshift(newRecord);
+      saveState();
+      renderRecords();
+      renderStats();
+      switchTab('history');
+      document.getElementById('entry-form').reset();
+      document.getElementById('entry-date').valueAsDate = new Date();
+    });
+
+    function renderRecords() {
+      const list = document.getElementById('records-list');
+      if(records.length === 0) {
+        list.innerHTML = `<p class="text-center text-xs text-slate-500 py-8">Aucune intervention enregistrée.</p>`;
+        return;
+      }
+      list.innerHTML = records.map(r => `
+        <div class="bg-slate-800 p-3.5 rounded-2xl border border-slate-700/80 space-y-2">
+          <div class="flex justify-between items-start">
+            <div>
+              <span class="text-[10px] uppercase font-bold tracking-wider px-2 py-0.5 rounded-full ${r.category === 'Maison' ? 'bg-emerald-500/10 text-emerald-400 border border-emerald-500/20' : 'bg-blue-500/10 text-blue-400 border border-blue-500/20'}">
+                ${r.property || r.category}
+              </span>
+              <h3 class="text-sm font-semibold text-slate-100 mt-1">${r.title}</h3>
+            </div>
+            <span class="text-sm font-bold text-slate-100">${r.amount ? r.amount.toFixed(2) + ' €' : '-'}</span>
+          </div>
+          <div class="text-xs text-slate-400 flex justify-between items-center pt-1 border-t border-slate-700/50">
+            <span><i class="fa-regular fa-calendar mr-1"></i>${r.date}</span>
+            <span><i class="fa-solid fa-user-gear mr-1"></i>${r.artisan || 'N/C'}</span>
+          </div>
+        </div>
+      `).join('');
+    }
+
+    function renderStats() {
+      const total = records.reduce((acc, r) => acc + (r.amount || 0), 0);
+      document.getElementById('stat-total').textContent = `${total.toFixed(2)} €`;
+      document.getElementById('stat-count').textContent = records.length;
+
+      const byProp = {};
+      records.forEach(r => {
+        const key = r.property || r.category;
+        byProp[key] = (byProp[key] || 0) + (r.amount || 0);
+      });
+
+      const statsContainer = document.getElementById('stats-by-property');
+      statsContainer.innerHTML = Object.entries(byProp).map(([prop, amt]) => `
+        <div class="flex justify-between items-center py-1 border-b border-slate-700/30">
+          <span>${prop}</span>
+          <span class="font-semibold text-slate-200">${amt.toFixed(2)} €</span>
+        </div>
+      `).join('') || `<p class="text-xs text-slate-500">Pas encore de données.</p>`;
+    }
+
+    function exportData() {
+      const dataStr = "data:text/json;charset=utf-8," + encodeURIComponent(JSON.stringify({ properties, records }, null, 2));
+      const downloadAnchor = document.createElement('a');
+      downloadAnchor.setAttribute("href", dataStr);
+      downloadAnchor.setAttribute("download", `kDrive_Sauvegarde_Travaux_${new Date().toISOString().slice(0,10)}.json`);
+      document.body.appendChild(downloadAnchor);
+      downloadAnchor.click();
+      downloadAnchor.remove();
+    }
+  </script>
+</body>
+</html>
