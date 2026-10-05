@@ -134,7 +134,8 @@
                 <form onsubmit="saveKDriveConfig(event)" class="space-y-3 text-sm">
                     <div>
                         <label class="block text-xs font-semibold text-gray-600 mb-1">URL WebDAV</label>
-                        <input type="url" id="webdavUrl" placeholder="https://connect.kdrive.infomaniak.com" required class="w-full p-2 border rounded">
+                        <input type="url" id="webdavUrl" placeholder="https://kdrive-proxy.moncompte.workers.dev" required class="w-full p-2 border rounded">
+                        <p class="text-xs text-gray-500 mt-1">Adresse de votre proxy Cloudflare Worker (sans « / » final). Un appel direct à kDrive est bloqué par le navigateur (CORS).</p>
                     </div>
                     <div>
                         <label class="block text-xs font-semibold text-gray-600 mb-1">Identifiant / Email Infomaniak</label>
@@ -146,9 +147,10 @@
                     </div>
                     <div>
                         <label class="block text-xs font-semibold text-gray-600 mb-1">Chemin du fichier sur kDrive</label>
-                        <input type="text" id="webdavPath" value="/donnees_travaux.json" required class="w-full p-2 border rounded">
+                        <input type="text" id="webdavPath" value="/app_travaux/donnees_travaux.json" required class="w-full p-2 border rounded">
                     </div>
                     <button type="submit" class="w-full bg-blue-600 text-white py-2 rounded font-bold hover:bg-blue-700">Enregistrer & Tester</button>
+                    <p id="lastSync" class="text-xs text-gray-500 text-center"></p>
                 </form>
             </div>
         </section>
@@ -182,8 +184,12 @@
                 { id: '2', name: 'Voiture Principale', type: 'Voiture' }
             ],
             interventions: [],
-            kdrive: { url: '', user: '', password: '', path: '/donnees_travaux.json' }
+            kdrive: { url: '', user: '', password: '', path: '/app_travaux/donnees_travaux.json' },
+            deletedIds: []   // ids supprimés (évite qu'ils réapparaissent après synchro)
         };
+
+        // Échappe le HTML pour éviter toute injection via les champs saisis
+        const esc = s => String(s ?? '').replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
 
         // Init
         document.addEventListener('DOMContentLoaded', () => {
@@ -194,13 +200,26 @@
             renderHistory();
             renderStats();
             fillKDriveConfigForm();
+            // Synchro automatique au démarrage si kDrive est configuré
+            if (store.kdrive && store.kdrive.url && store.kdrive.user && store.kdrive.password) {
+                syncWithKDrive(true);
+            }
         });
 
         // Local Storage Handling
         function loadLocalStore() {
             const saved = localStorage.getItem('app_travaux_data');
             if (saved) {
-                try { store = JSON.parse(saved); } catch (e) { console.error(e); }
+                try {
+                    const parsed = JSON.parse(saved);
+                    store = {
+                        ...store, ...parsed,
+                        properties: parsed.properties || store.properties,
+                        interventions: parsed.interventions || [],
+                        deletedIds: parsed.deletedIds || [],
+                        kdrive: { ...store.kdrive, ...(parsed.kdrive || {}) }
+                    };
+                } catch (e) { console.error(e); }
             }
         }
 
@@ -229,6 +248,7 @@
 
             store.properties.push({ id: Date.now().toString(), name, type });
             saveLocalStore();
+            syncWithKDrive(true);
             document.getElementById('newPropName').value = '';
             renderProperties();
             updatePropertyList();
@@ -236,17 +256,20 @@
         }
 
         function deleteProperty(id) {
+            if (!confirm('Supprimer ce bien ?')) return;
             store.properties = store.properties.filter(p => p.id !== id);
+            store.deletedIds.push(id);
             saveLocalStore();
             renderProperties();
             updatePropertyList();
+            syncWithKDrive(true);
         }
 
         function renderProperties() {
             const list = document.getElementById('propertiesList');
             list.innerHTML = store.properties.map(p => `
                 <div class="flex justify-between items-center bg-gray-50 p-2 rounded text-sm border">
-                    <span><strong class="text-blue-600">[${p.type}]</strong> ${p.name}</span>
+                    <span><strong class="text-blue-600">[${esc(p.type)}]</strong> ${esc(p.name)}</span>
                     <button onclick="deleteProperty('${p.id}')" class="text-red-500 hover:text-red-700 px-2"><i class="fa-solid fa-trash"></i></button>
                 </div>
             `).join('');
@@ -257,7 +280,7 @@
             const select = document.getElementById('propertySelect');
             const filtered = store.properties.filter(p => p.type === cat);
 
-            select.innerHTML = filtered.map(p => `<option value="${p.name}">${p.name}</option>`).join('');
+            select.innerHTML = filtered.map(p => `<option value="${esc(p.name)}">${esc(p.name)}</option>`).join('');
             if (filtered.length === 0) {
                 select.innerHTML = `<option value="">-- Aucun bien disponible (Ajoutez-en) --</option>`;
             }
@@ -265,7 +288,7 @@
             // Update filter dropdown in History
             const filterProp = document.getElementById('filterProperty');
             filterProp.innerHTML = '<option value="ALL">Tous les biens</option>' + 
-                store.properties.map(p => `<option value="${p.name}">${p.name}</option>`).join('');
+                store.properties.map(p => `<option value="${esc(p.name)}">${esc(p.name)}</option>`).join('');
         }
 
         // Intervention Management
@@ -326,25 +349,38 @@
                 <div class="bg-white p-4 rounded-lg shadow space-y-2 border-l-4 ${item.category === 'Maison' ? 'border-blue-500' : 'border-green-500'}">
                     <div class="flex justify-between items-start">
                         <div>
-                            <span class="text-xs font-bold px-2 py-0.5 rounded ${item.category === 'Maison' ? 'bg-blue-100 text-blue-800' : 'bg-green-100 text-green-800'}">${item.property || item.category}</span>
-                            <h3 class="font-bold text-gray-800 text-md mt-1">${item.title}</h3>
+                            <span class="text-xs font-bold px-2 py-0.5 rounded ${item.category === 'Maison' ? 'bg-blue-100 text-blue-800' : 'bg-green-100 text-green-800'}">${esc(item.property || item.category)}</span>
+                            <h3 class="font-bold text-gray-800 text-md mt-1">${esc(item.title)}</h3>
                         </div>
-                        <span class="font-extrabold text-blue-600">${item.amount ? item.amount.toFixed(2) + ' €' : '-'}</span>
+                        <div class="flex items-center gap-2">
+                            <span class="font-extrabold text-blue-600">${item.amount ? item.amount.toFixed(2) + ' €' : '-'}</span>
+                            <button onclick="deleteIntervention('${esc(item.id)}')" title="Supprimer" class="text-red-400 hover:text-red-600"><i class="fa-solid fa-trash"></i></button>
+                        </div>
                     </div>
                     <div class="text-xs text-gray-500 flex justify-between">
-                        <span><i class="fa-regular fa-calendar"></i> ${item.date}</span>
-                        <span><i class="fa-solid fa-user-gear"></i> ${item.artisan || 'N/C'}</span>
+                        <span><i class="fa-regular fa-calendar"></i> ${esc(item.date)}</span>
+                        <span><i class="fa-solid fa-user-gear"></i> ${esc(item.artisan || 'N/C')}</span>
                     </div>
-                    ${item.notes ? `<p class="text-xs text-gray-600 bg-gray-50 p-2 rounded">${item.notes}</p>` : ''}
+                    ${item.notes ? `<p class="text-xs text-gray-600 bg-gray-50 p-2 rounded">${esc(item.notes)}</p>` : ''}
                     ${item.attachmentData ? `
                         <div class="pt-1">
-                            <a href="${item.attachmentData}" download="${item.attachmentName || 'facture'}" class="text-xs text-blue-600 hover:underline flex items-center gap-1">
+                            <a href="${item.attachmentData}" download="${esc(item.attachmentName || 'facture')}" class="text-xs text-blue-600 hover:underline flex items-center gap-1">
                                 <i class="fa-solid fa-paperclip"></i> Voir la pièce jointe
                             </a>
                         </div>
                     ` : ''}
                 </div>
             `).join('');
+        }
+
+        function deleteIntervention(id) {
+            if (!confirm('Supprimer cette intervention ?')) return;
+            store.interventions = store.interventions.filter(i => i.id !== id);
+            store.deletedIds.push(id);
+            saveLocalStore();
+            renderHistory();
+            renderStats();
+            syncWithKDrive(true);
         }
 
         // Stats Rendering
@@ -361,7 +397,7 @@
             const container = document.getElementById('statsByProperty');
             container.innerHTML = Object.entries(byProp).map(([prop, amt]) => `
                 <div class="flex justify-between items-center py-1 border-b">
-                    <span>${prop}</span>
+                    <span>${esc(prop)}</span>
                     <span class="font-bold">${amt.toFixed(2)} €</span>
                 </div>
             `).join('');
@@ -373,69 +409,153 @@
                 document.getElementById('webdavUrl').value = store.kdrive.url || '';
                 document.getElementById('webdavUser').value = store.kdrive.user || '';
                 document.getElementById('webdavPassword').value = store.kdrive.password || '';
-                document.getElementById('webdavPath').value = store.kdrive.path || '/donnees_travaux.json';
+                document.getElementById('webdavPath').value = store.kdrive.path || '/app_travaux/donnees_travaux.json';
             }
         }
 
         function saveKDriveConfig(e) {
             e.preventDefault();
             store.kdrive = {
-                url: document.getElementById('webdavUrl').value.trim(),
+                url: document.getElementById('webdavUrl').value.trim().replace(/\/+$/, ''),
                 user: document.getElementById('webdavUser').value.trim(),
                 password: document.getElementById('webdavPassword').value.trim(),
-                path: document.getElementById('webdavPath').value.trim()
+                path: '/' + document.getElementById('webdavPath').value.trim().replace(/^\/+/, '')
             };
             saveLocalStore();
+            fillKDriveConfigForm();
             syncWithKDrive();
         }
 
-        async function syncWithKDrive() {
+        // --- Outils WebDAV ---
+        class HttpError extends Error {
+            constructor(status) { super('HTTP ' + status); this.status = status; }
+        }
+
+        function describeError(err) {
+            if (err instanceof HttpError) {
+                switch (err.status) {
+                    case 401: return 'Identifiants refusés (401). Vérifiez l\'e-mail et le mot de passe d\'application.';
+                    case 403: return 'Accès interdit (403). Vérifiez l\'adresse d\'origine autorisée dans le proxy.';
+                    case 404: return 'Chemin introuvable (404). Vérifiez l\'URL et le chemin du fichier.';
+                    case 409: return 'Dossier parent introuvable (409). Vérifiez le chemin sur kDrive.';
+                    case 507: return 'Espace insuffisant sur kDrive (507).';
+                    default: return 'Le serveur a répondu avec l\'erreur ' + err.status + '.';
+                }
+            }
+            if (err instanceof TypeError) {
+                return 'Serveur injoignable ou requête bloquée (CORS). Vérifiez l\'URL du proxy Cloudflare Worker.';
+            }
+            return err.message || 'Erreur inconnue.';
+        }
+
+        function davUrl(config, path) {
+            const encoded = path.split('/').map(encodeURIComponent).join('/');
+            return config.url.replace(/\/+$/, '') + encoded;
+        }
+
+        // Crée les dossiers parents manquants (MKCOL), un par un
+        async function ensureFolders(config, headers) {
+            const parts = config.path.split('/').filter(Boolean);
+            parts.pop(); // on retire le nom du fichier
+            let current = '';
+            for (const part of parts) {
+                current += '/' + part;
+                const res = await fetch(davUrl(config, current), { method: 'MKCOL', headers });
+                // 201 = créé, 405 = existe déjà : les deux sont OK
+                if (!res.ok && res.status !== 405) throw new HttpError(res.status);
+            }
+        }
+
+        // Fusionne les données distantes dans les données locales
+        function mergeRemote(remote) {
+            const deleted = new Set([...(store.deletedIds || []), ...(remote.deletedIds || [])]);
+            const mergeById = (local, distant) => {
+                const map = new Map();
+                (distant || []).forEach(x => map.set(x.id, x));
+                (local || []).forEach(x => map.set(x.id, x)); // la version locale l'emporte
+                return [...map.values()].filter(x => !deleted.has(x.id));
+            };
+            store.deletedIds = [...deleted];
+            store.properties = mergeById(store.properties, remote.properties);
+            store.interventions = mergeById(store.interventions, remote.interventions)
+                .sort((a, b) => (b.date || '').localeCompare(a.date || '') || b.id.localeCompare(a.id));
+        }
+
+        let syncing = false;
+        function setSyncing(on) {
+            syncing = on;
+            const btn = document.getElementById('syncBtn');
+            btn.disabled = on;
+            btn.classList.toggle('opacity-60', on);
+            btn.querySelector('i').classList.toggle('fa-spin', on);
+        }
+
+        // silent = true : n'affiche un message qu'en cas d'erreur
+        async function syncWithKDrive(silent = false) {
             const config = store.kdrive;
             if (!config || !config.url || !config.user || !config.password) {
-                showAlert('Veuillez configurer WebDAV kDrive dans l\'onglet Config.', 'bg-yellow-100 text-yellow-800');
+                if (silent !== true) showAlert('Veuillez configurer WebDAV kDrive dans l\'onglet Config.', 'bg-yellow-100 text-yellow-800');
                 return;
             }
+            if (syncing) return;
+            setSyncing(true);
+            if (silent !== true) showAlert('Synchronisation kDrive en cours...', 'bg-blue-100 text-blue-800');
 
-            showAlert('Synchronisation WebDAV kDrive en cours...', 'bg-blue-100 text-blue-800');
-
-            const fullUrl = config.url.replace(/\/$/, '') + config.path;
-            const headers = new Headers();
-            headers.append('Authorization', 'Basic ' + btoa(config.user + ':' + config.password));
+            const path = '/' + (config.path || '/app_travaux/donnees_travaux.json').replace(/^\/+/, '');
+            const fullUrl = davUrl(config, path);
+            const auth = 'Basic ' + btoa(unescape(encodeURIComponent(config.user + ':' + config.password)));
+            const headers = { 'Authorization': auth };
 
             try {
-                // Step 1: Try reading remote file
-                const response = await fetch(fullUrl, { method: 'GET', headers: headers });
-
-                if (response.ok) {
-                    const remoteData = await response.json();
-                    // Merge local + remote interventions (avoid duplicates)
-                    const mergedInterventions = [...store.interventions];
-                    remoteData.interventions.forEach(rItem => {
-                        if (!mergedInterventions.some(lItem => lItem.id === rItem.id)) {
-                            mergedInterventions.push(rItem);
-                        }
-                    });
-                    store.interventions = mergedInterventions;
-                    saveLocalStore();
+                // Étape 1 : lire le fichier distant (404 = pas encore créé, c'est normal)
+                const getRes = await fetch(fullUrl, { method: 'GET', headers });
+                if (getRes.ok) {
+                    const text = (await getRes.text()).trim();
+                    if (text) {
+                        let remote;
+                        try { remote = JSON.parse(text); }
+                        catch { throw new Error('Le fichier distant n\'est pas un JSON valide.'); }
+                        mergeRemote(remote);
+                        saveLocalStore();
+                    }
+                } else if (getRes.status !== 404) {
+                    throw new HttpError(getRes.status);
                 }
 
-                // Step 2: Push updated JSON to kDrive
-                const putResponse = await fetch(fullUrl, {
+                // Étape 2 : envoyer les données (SANS les identifiants kDrive)
+                const payload = JSON.stringify({
+                    version: 2,
+                    updatedAt: new Date().toISOString(),
+                    properties: store.properties,
+                    interventions: store.interventions,
+                    deletedIds: store.deletedIds
+                }, null, 2);
+
+                const put = () => fetch(fullUrl, {
                     method: 'PUT',
-                    headers: headers,
-                    body: JSON.stringify(store, null, 2)
+                    headers: { ...headers, 'Content-Type': 'application/json' },
+                    body: payload
                 });
 
-                if (putResponse.ok || putResponse.status === 201 || putResponse.status === 204) {
-                    showAlert('Connexion & Synchro kDrive réussie !', 'bg-green-100 text-green-800');
-                    renderHistory();
-                    renderStats();
-                } else {
-                    throw new Error(`Erreur WebDAV Status: ${putResponse.status}`);
+                let putRes = await put();
+                if (putRes.status === 404 || putRes.status === 409) {
+                    await ensureFolders({ ...config, path }, headers);
+                    putRes = await put();
                 }
+                if (!putRes.ok) throw new HttpError(putRes.status);
+
+                renderHistory();
+                renderStats();
+                renderProperties();
+                updatePropertyList();
+                const now = new Date().toLocaleString('fr-FR');
+                document.getElementById('lastSync').textContent = 'Dernière synchro réussie : ' + now;
+                if (silent !== true) showAlert('Synchronisation kDrive réussie !', 'bg-green-100 text-green-800');
             } catch (err) {
                 console.error(err);
-                showAlert(`Erreur WebDAV: Vérifiez vos identifiants kDrive.`, 'bg-red-100 text-red-800');
+                showAlert('Erreur kDrive : ' + esc(describeError(err)), 'bg-red-100 text-red-800');
+            } finally {
+                setSyncing(false);
             }
         }
 
