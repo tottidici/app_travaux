@@ -18,7 +18,7 @@
             <i class="fa-solid fa-house-chimney-crack"></i> Mon Suivi Travaux
         </h1>
         <button id="syncBtn" onclick="syncWithKDrive()" class="text-xs bg-blue-700 hover:bg-blue-800 px-3 py-1.5 rounded flex items-center gap-1 transition">
-            <i class="fa-solid fa-rotate"></i> Sync kDrive
+            <i class="fa-solid fa-rotate"></i> Synchroniser
         </button>
     </header>
 
@@ -88,11 +88,13 @@
                 </div>
 
                 <div>
-                    <label class="block text-xs font-semibold uppercase text-gray-600 mb-1">Photo / Facture (Scan)</label>
-                    <input type="file" id="fileInput" accept="image/*,.pdf" class="w-full text-sm text-gray-500 file:mr-4 file:py-2 file:px-4 file:rounded file:border-0 file:bg-blue-50 file:text-blue-700 hover:file:bg-blue-100">
+                    <label class="block text-xs font-semibold uppercase text-gray-600 mb-1">Photos / Factures (plusieurs possibles)</label>
+                    <input type="file" id="fileInput" accept="image/*,.pdf" multiple class="w-full text-sm text-gray-500 file:mr-4 file:py-2 file:px-4 file:rounded file:border-0 file:bg-blue-50 file:text-blue-700 hover:file:bg-blue-100">
                 </div>
 
-                <button type="submit" class="w-full bg-blue-600 text-white py-2.5 rounded font-bold hover:bg-blue-700 transition">Enregistrer</button>
+                <p class="text-xs text-gray-500 -mt-2">Les photos sont réduites automatiquement (environ 300 Ko chacune). Les PDF sont limités à 8 Mo.</p>
+
+                <button id="saveBtn" type="submit" class="w-full bg-blue-600 text-white py-2.5 rounded font-bold hover:bg-blue-700 transition">Enregistrer</button>
             </form>
         </section>
 
@@ -126,28 +128,20 @@
                 <div id="propertiesList" class="space-y-2 pt-2"></div>
             </div>
 
-            <!-- Paramètres WebDAV kDrive -->
+            <!-- Paramètres de synchronisation (Cloudflare) -->
             <div class="bg-white p-4 rounded-lg shadow space-y-3">
                 <h2 class="text-md font-bold border-b pb-2 flex items-center gap-2">
-                    <i class="fa-solid fa-cloud text-blue-600"></i> Configuration kDrive WebDAV
+                    <i class="fa-solid fa-cloud text-blue-600"></i> Synchronisation cloud
                 </h2>
-                <form onsubmit="saveKDriveConfig(event)" class="space-y-3 text-sm">
+                <form onsubmit="saveSyncConfig(event)" class="space-y-3 text-sm">
                     <div>
-                        <label class="block text-xs font-semibold text-gray-600 mb-1">URL WebDAV</label>
-                        <input type="url" id="webdavUrl" placeholder="https://kdrive-proxy.moncompte.workers.dev" required class="w-full p-2 border rounded">
-                        <p class="text-xs text-gray-500 mt-1">Adresse de votre proxy Cloudflare Worker (sans « / » final). Un appel direct à kDrive est bloqué par le navigateur (CORS).</p>
+                        <label class="block text-xs font-semibold text-gray-600 mb-1">Adresse du Worker Cloudflare</label>
+                        <input type="url" id="syncUrl" placeholder="https://kdrive-proxy.moncompte.workers.dev" required class="w-full p-2 border rounded">
+                        <p class="text-xs text-gray-500 mt-1">Sans « / » à la fin.</p>
                     </div>
                     <div>
-                        <label class="block text-xs font-semibold text-gray-600 mb-1">Identifiant / Email Infomaniak</label>
-                        <input type="email" id="webdavUser" placeholder="votre_email@exemple.com" required class="w-full p-2 border rounded">
-                    </div>
-                    <div>
-                        <label class="block text-xs font-semibold text-gray-600 mb-1">Mot de passe d'application</label>
-                        <input type="password" id="webdavPassword" placeholder="••••••••••••••••" required class="w-full p-2 border rounded">
-                    </div>
-                    <div>
-                        <label class="block text-xs font-semibold text-gray-600 mb-1">Chemin du fichier sur kDrive</label>
-                        <input type="text" id="webdavPath" value="/app_travaux/donnees_travaux.json" required class="w-full p-2 border rounded">
+                        <label class="block text-xs font-semibold text-gray-600 mb-1">Clé secrète</label>
+                        <input type="password" id="syncToken" placeholder="La clé définie dans le Worker (TOKEN)" required class="w-full p-2 border rounded">
                     </div>
                     <button type="submit" class="w-full bg-blue-600 text-white py-2 rounded font-bold hover:bg-blue-700">Enregistrer & Tester</button>
                     <p id="lastSync" class="text-xs text-gray-500 text-center"></p>
@@ -184,15 +178,16 @@
                 { id: '2', name: 'Voiture Principale', type: 'Voiture' }
             ],
             interventions: [],
-            kdrive: { url: '', user: '', password: '', path: '/app_travaux/donnees_travaux.json' },
-            deletedIds: []   // ids supprimés (évite qu'ils réapparaissent après synchro)
+            kdrive: { url: '', token: '' },
+            deletedIds: [],          // ids supprimés (évite qu'ils réapparaissent après synchro)
+            pendingPhotoDeletes: []  // photos à supprimer du cloud à la prochaine synchro (local uniquement)
         };
 
         // Échappe le HTML pour éviter toute injection via les champs saisis
         const esc = s => String(s ?? '').replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
 
         // Init
-        document.addEventListener('DOMContentLoaded', () => {
+        document.addEventListener('DOMContentLoaded', async () => {
             loadLocalStore();
             document.getElementById('date').valueAsDate = new Date();
             updatePropertyList();
@@ -200,8 +195,9 @@
             renderHistory();
             renderStats();
             fillKDriveConfigForm();
-            // Synchro automatique au démarrage si kDrive est configuré
-            if (store.kdrive && store.kdrive.url && store.kdrive.user && store.kdrive.password) {
+            try { await migrateInlineAttachments(); } catch (e) { console.error('Migration pièces jointes', e); }
+            // Synchro automatique au démarrage si la synchro est configurée
+            if (store.kdrive && store.kdrive.url && store.kdrive.token) {
                 syncWithKDrive(true);
             }
         });
@@ -217,7 +213,8 @@
                         properties: parsed.properties || store.properties,
                         interventions: parsed.interventions || [],
                         deletedIds: parsed.deletedIds || [],
-                        kdrive: { ...store.kdrive, ...(parsed.kdrive || {}) }
+                        pendingPhotoDeletes: parsed.pendingPhotoDeletes || [],
+                        kdrive: { url: (parsed.kdrive && parsed.kdrive.url) || '', token: (parsed.kdrive && parsed.kdrive.token) || '' }
                     };
                 } catch (e) { console.error(e); }
             }
@@ -292,40 +289,44 @@
         }
 
         // Intervention Management
-        function saveIntervention(e) {
+        async function saveIntervention(e) {
             e.preventDefault();
-            const fileInput = document.getElementById('fileInput');
-            const file = fileInput.files[0];
+            const btn = document.getElementById('saveBtn');
+            const files = [...document.getElementById('fileInput').files];
 
-            const item = {
-                id: Date.now().toString(),
-                category: document.getElementById('category').value,
-                property: document.getElementById('propertySelect').value,
-                title: document.getElementById('title').value,
-                date: document.getElementById('date').value,
-                amount: parseFloat(document.getElementById('amount').value) || 0,
-                artisan: document.getElementById('artisan').value,
-                notes: document.getElementById('notes').value,
-                attachmentName: file ? file.name : null
-            };
+            btn.disabled = true;
+            btn.textContent = files.length ? 'Préparation des photos...' : 'Enregistrement...';
 
-            const finalizeSave = (attachmentBase64 = null) => {
-                if (attachmentBase64) item.attachmentData = attachmentBase64;
-                store.interventions.unshift(item);
+            try {
+                const attachments = [];
+                for (const file of files) {
+                    const att = await prepareAttachment(file);   // compresse + range dans IndexedDB
+                    attachments.push({ id: att.id, name: att.name, type: att.type });
+                }
+
+                store.interventions.unshift({
+                    id: Date.now().toString(),
+                    category: document.getElementById('category').value,
+                    property: document.getElementById('propertySelect').value,
+                    title: document.getElementById('title').value,
+                    date: document.getElementById('date').value,
+                    amount: parseFloat(document.getElementById('amount').value) || 0,
+                    artisan: document.getElementById('artisan').value,
+                    notes: document.getElementById('notes').value,
+                    attachments
+                });
                 saveLocalStore();
                 document.getElementById('workForm').reset();
                 document.getElementById('date').valueAsDate = new Date();
                 showAlert('Intervention enregistrée !', 'bg-green-100 text-green-800');
                 switchTab('history');
-                syncWithKDrive(); // Auto-sync
-            };
-
-            if (file) {
-                const reader = new FileReader();
-                reader.onload = (event) => finalizeSave(event.target.result);
-                reader.readAsDataURL(file);
-            } else {
-                finalizeSave();
+                syncWithKDrive(true);
+            } catch (err) {
+                console.error(err);
+                showAlert('Enregistrement impossible : ' + esc(err.message || err), 'bg-red-100 text-red-800');
+            } finally {
+                btn.disabled = false;
+                btn.textContent = 'Enregistrer';
             }
         }
 
@@ -362,19 +363,29 @@
                         <span><i class="fa-solid fa-user-gear"></i> ${esc(item.artisan || 'N/C')}</span>
                     </div>
                     ${item.notes ? `<p class="text-xs text-gray-600 bg-gray-50 p-2 rounded">${esc(item.notes)}</p>` : ''}
-                    ${item.attachmentData ? `
-                        <div class="pt-1">
-                            <a href="${item.attachmentData}" download="${esc(item.attachmentName || 'facture')}" class="text-xs text-blue-600 hover:underline flex items-center gap-1">
-                                <i class="fa-solid fa-paperclip"></i> Voir la pièce jointe
-                            </a>
+${(item.attachments && item.attachments.length) ? `
+                        <div class="pt-1 flex flex-wrap gap-2">
+                            ${item.attachments.map(att => (att.type || '').startsWith('image/') ? `
+                                <a data-photo-link="${esc(att.id)}" target="_blank" rel="noopener" class="block">
+                                    <img data-photo="${esc(att.id)}" alt="${esc(att.name)}" class="h-20 w-20 object-cover rounded border bg-gray-100">
+                                </a>` : `
+                                <a data-photo-link="${esc(att.id)}" target="_blank" rel="noopener" download="${esc(att.name)}" class="text-xs text-blue-600 hover:underline flex items-center gap-1 border rounded px-2 py-1">
+                                    <i class="fa-solid fa-file-pdf"></i> ${esc(att.name)}
+                                </a>`).join('')}
                         </div>
                     ` : ''}
                 </div>
             `).join('');
+            hydratePhotos(container);
         }
 
         function deleteIntervention(id) {
             if (!confirm('Supprimer cette intervention ?')) return;
+            const item = store.interventions.find(i => i.id === id);
+            ((item && item.attachments) || []).forEach(att => {
+                photoDelete(att.id).catch(console.error);
+                store.pendingPhotoDeletes.push(att.id);
+            });
             store.interventions = store.interventions.filter(i => i.id !== id);
             store.deletedIds.push(id);
             saveLocalStore();
@@ -403,30 +414,147 @@
             `).join('');
         }
 
-        // kDrive WebDAV Integration
-        function fillKDriveConfigForm() {
-            if (store.kdrive) {
-                document.getElementById('webdavUrl').value = store.kdrive.url || '';
-                document.getElementById('webdavUser').value = store.kdrive.user || '';
-                document.getElementById('webdavPassword').value = store.kdrive.password || '';
-                document.getElementById('webdavPath').value = store.kdrive.path || '/app_travaux/donnees_travaux.json';
+        // =====================================================
+        // Photos : IndexedDB (stockage local) + compression
+        // =====================================================
+        let dbPromise = null;
+        function openDb() {
+            if (!dbPromise) {
+                dbPromise = new Promise((resolve, reject) => {
+                    const req = indexedDB.open('app_travaux_photos', 1);
+                    req.onupgradeneeded = () => req.result.createObjectStore('photos', { keyPath: 'id' });
+                    req.onsuccess = () => resolve(req.result);
+                    req.onerror = () => reject(req.error);
+                });
+            }
+            return dbPromise;
+        }
+        async function idb(mode, fn) {
+            const db = await openDb();
+            return new Promise((resolve, reject) => {
+                const tx = db.transaction('photos', mode);
+                const req = fn(tx.objectStore('photos'));
+                tx.oncomplete = () => resolve(req ? req.result : undefined);
+                tx.onerror = () => reject(tx.error);
+                tx.onabort = () => reject(tx.error || new Error('Stockage local plein ou refusé'));
+            });
+        }
+        const photoPut = rec => idb('readwrite', st => st.put(rec));
+        const photoGet = id => idb('readonly', st => st.get(id));
+        const photoDelete = id => idb('readwrite', st => st.delete(id));
+
+        const newId = () => Date.now().toString(36) + Math.random().toString(36).slice(2, 8);
+
+        async function compressImage(file, maxSide = 1600, quality = 0.8) {
+            let bitmap;
+            try {
+                bitmap = await createImageBitmap(file, { imageOrientation: 'from-image' });
+            } catch (e) {
+                bitmap = await new Promise((resolve, reject) => {
+                    const img = new Image();
+                    img.onload = () => resolve(img);
+                    img.onerror = () => reject(new Error('Format d\'image non pris en charge : ' + file.name));
+                    img.src = URL.createObjectURL(file);
+                });
+            }
+            const w = bitmap.naturalWidth || bitmap.width, h = bitmap.naturalHeight || bitmap.height;
+            const scale = Math.min(1, maxSide / Math.max(w, h));
+            const canvas = document.createElement('canvas');
+            canvas.width = Math.round(w * scale);
+            canvas.height = Math.round(h * scale);
+            const ctx = canvas.getContext('2d');
+            ctx.fillStyle = '#ffffff';
+            ctx.fillRect(0, 0, canvas.width, canvas.height);
+            ctx.drawImage(bitmap, 0, 0, canvas.width, canvas.height);
+            if (bitmap.close) bitmap.close();
+            return new Promise((resolve, reject) => {
+                canvas.toBlob(b => b ? resolve(b) : reject(new Error('Compression impossible')), 'image/jpeg', quality);
+            });
+        }
+
+        // Prépare un fichier choisi : compresse les images, refuse les PDF trop gros, enregistre en local
+        async function prepareAttachment(file) {
+            let blob, name = file.name, type = file.type;
+            if ((type || '').startsWith('image/')) {
+                blob = await compressImage(file);
+                type = 'image/jpeg';
+                name = name.replace(/\.[^.]+$/, '') + '.jpg';
+            } else if (type === 'application/pdf' || /\.pdf$/i.test(name)) {
+                if (file.size > 8 * 1024 * 1024) throw new Error('PDF trop volumineux (8 Mo maximum) : ' + file.name);
+                blob = file;
+                type = 'application/pdf';
+            } else {
+                throw new Error('Type de fichier non pris en charge : ' + file.name);
+            }
+            const rec = { id: newId(), name, type, blob, synced: false };
+            await photoPut(rec);
+            return rec;
+        }
+
+        // Anciennes versions : pièces jointes stockées en base64 dans le JSON -> on les convertit
+        async function migrateInlineAttachments() {
+            let changed = false;
+            for (const item of store.interventions) {
+                if (!item.attachmentData) continue;
+                try {
+                    const raw = await (await fetch(item.attachmentData)).blob();
+                    const file = new File([raw], item.attachmentName || 'piece', { type: raw.type });
+                    const att = await prepareAttachment(file);
+                    item.attachments = [...(item.attachments || []), { id: att.id, name: att.name, type: att.type }];
+                } catch (e) { console.error('Migration impossible pour', item.id, e); continue; }
+                delete item.attachmentData;
+                delete item.attachmentName;
+                changed = true;
+            }
+            if (changed) { saveLocalStore(); renderHistory(); }
+        }
+
+        // Affiche les photos de l'historique (lues depuis IndexedDB)
+        const photoUrlCache = new Map();
+        async function photoUrl(id) {
+            if (photoUrlCache.has(id)) return photoUrlCache.get(id);
+            const rec = await photoGet(id);
+            if (!rec) return null;
+            const url = URL.createObjectURL(rec.blob);
+            photoUrlCache.set(id, url);
+            return url;
+        }
+        async function hydratePhotos(container) {
+            for (const a of container.querySelectorAll('[data-photo-link]')) {
+                const id = a.dataset.photoLink;
+                try {
+                    const url = await photoUrl(id);
+                    const img = a.querySelector('img[data-photo]');
+                    if (url) {
+                        a.href = url;
+                        if (img) img.src = url;
+                    } else if (img) {
+                        img.alt = 'Photo non téléchargée : synchronisez';
+                        img.title = 'Photo non téléchargée : synchronisez';
+                    }
+                } catch (e) { console.error(e); }
             }
         }
 
-        function saveKDriveConfig(e) {
+        // =====================================================
+        // Synchronisation cloud (Cloudflare Worker + KV)
+        // =====================================================
+        function fillKDriveConfigForm() {
+            document.getElementById('syncUrl').value = (store.kdrive && store.kdrive.url) || '';
+            document.getElementById('syncToken').value = (store.kdrive && store.kdrive.token) || '';
+        }
+
+        function saveSyncConfig(e) {
             e.preventDefault();
             store.kdrive = {
-                url: document.getElementById('webdavUrl').value.trim().replace(/\/+$/, ''),
-                user: document.getElementById('webdavUser').value.trim(),
-                password: document.getElementById('webdavPassword').value.trim(),
-                path: '/' + document.getElementById('webdavPath').value.trim().replace(/^\/+/, '')
+                url: document.getElementById('syncUrl').value.trim().replace(/\/+$/, ''),
+                token: document.getElementById('syncToken').value.trim()
             };
             saveLocalStore();
             fillKDriveConfigForm();
             syncWithKDrive();
         }
 
-        // --- Outils WebDAV ---
         class HttpError extends Error {
             constructor(status) { super('HTTP ' + status); this.status = status; }
         }
@@ -434,36 +562,18 @@
         function describeError(err) {
             if (err instanceof HttpError) {
                 switch (err.status) {
-                    case 401: return 'Identifiants refusés (401). Vérifiez l\'e-mail et le mot de passe d\'application.';
-                    case 403: return 'Accès interdit (403). Vérifiez l\'adresse d\'origine autorisée dans le proxy.';
-                    case 404: return 'Chemin introuvable (404). Vérifiez l\'URL et le chemin du fichier.';
-                    case 409: return 'Dossier parent introuvable (409). Vérifiez le chemin sur kDrive.';
-                    case 507: return 'Espace insuffisant sur kDrive (507).';
+                    case 401: return 'Clé secrète refusée (401). Vérifiez qu\'elle est identique dans le Worker (TOKEN) et dans l\'appli.';
+                    case 403: return 'Origine refusée (403). L\'adresse de l\'appli doit correspondre à ALLOWED_ORIGIN dans le Worker.';
+                    case 404: return 'Adresse introuvable (404). Vérifiez l\'adresse du Worker.';
+                    case 413: return 'Fichier trop volumineux (413).';
+                    case 500: return 'Worker mal configuré (500). Vérifiez le binding KV « DATA » et le secret « TOKEN ».';
                     default: return 'Le serveur a répondu avec l\'erreur ' + err.status + '.';
                 }
             }
             if (err instanceof TypeError) {
-                return 'Serveur injoignable ou requête bloquée (CORS). Vérifiez l\'URL du proxy Cloudflare Worker.';
+                return 'Serveur injoignable ou requête bloquée. Vérifiez l\'adresse du Worker et votre connexion.';
             }
             return err.message || 'Erreur inconnue.';
-        }
-
-        function davUrl(config, path) {
-            const encoded = path.split('/').map(encodeURIComponent).join('/');
-            return config.url.replace(/\/+$/, '') + encoded;
-        }
-
-        // Crée les dossiers parents manquants (MKCOL), un par un
-        async function ensureFolders(config, headers) {
-            const parts = config.path.split('/').filter(Boolean);
-            parts.pop(); // on retire le nom du fichier
-            let current = '';
-            for (const part of parts) {
-                current += '/' + part;
-                const res = await fetch(davUrl(config, current), { method: 'MKCOL', headers });
-                // 201 = créé, 405 = existe déjà : les deux sont OK
-                if (!res.ok && res.status !== 405) throw new HttpError(res.status);
-            }
         }
 
         // Fusionne les données distantes dans les données locales
@@ -493,67 +603,100 @@
         // silent = true : n'affiche un message qu'en cas d'erreur
         async function syncWithKDrive(silent = false) {
             const config = store.kdrive;
-            if (!config || !config.url || !config.user || !config.password) {
-                if (silent !== true) showAlert('Veuillez configurer WebDAV kDrive dans l\'onglet Config.', 'bg-yellow-100 text-yellow-800');
+            if (!config || !config.url || !config.token) {
+                if (silent !== true) showAlert('Veuillez configurer la synchronisation dans l\'onglet Config.', 'bg-yellow-100 text-yellow-800');
                 return;
             }
             if (syncing) return;
             setSyncing(true);
-            if (silent !== true) showAlert('Synchronisation kDrive en cours...', 'bg-blue-100 text-blue-800');
+            if (silent !== true) showAlert('Synchronisation en cours...', 'bg-blue-100 text-blue-800');
 
-            const path = '/' + (config.path || '/app_travaux/donnees_travaux.json').replace(/^\/+/, '');
-            const fullUrl = davUrl(config, path);
-            const auth = 'Basic ' + btoa(unescape(encodeURIComponent(config.user + ':' + config.password)));
-            const headers = { 'Authorization': auth };
+            const base = config.url.replace(/\/+$/, '');
+            const auth = { 'Authorization': 'Bearer ' + config.token };
+            let sent = 0, received = 0, missing = 0;
 
             try {
-                // Étape 1 : lire le fichier distant (404 = pas encore créé, c'est normal)
-                const getRes = await fetch(fullUrl, { method: 'GET', headers });
+                // 1. Lire les données distantes (404 = pas encore de données, c'est normal)
+                const getRes = await fetch(base + '/data', { method: 'GET', headers: auth });
                 if (getRes.ok) {
-                    const text = (await getRes.text()).trim();
-                    if (text) {
-                        let remote;
-                        try { remote = JSON.parse(text); }
-                        catch { throw new Error('Le fichier distant n\'est pas un JSON valide.'); }
-                        mergeRemote(remote);
-                        saveLocalStore();
-                    }
+                    let remote;
+                    try { remote = await getRes.json(); }
+                    catch { throw new Error('Les données distantes sont illisibles.'); }
+                    mergeRemote(remote);
+                    saveLocalStore();
                 } else if (getRes.status !== 404) {
                     throw new HttpError(getRes.status);
                 }
 
-                // Étape 2 : envoyer les données (SANS les identifiants kDrive)
-                const payload = JSON.stringify({
-                    version: 2,
-                    updatedAt: new Date().toISOString(),
-                    properties: store.properties,
-                    interventions: store.interventions,
-                    deletedIds: store.deletedIds
-                }, null, 2);
+                const attachments = store.interventions.flatMap(i => i.attachments || []);
 
-                const put = () => fetch(fullUrl, {
-                    method: 'PUT',
-                    headers: { ...headers, 'Content-Type': 'application/json' },
-                    body: payload
-                });
-
-                let putRes = await put();
-                if (putRes.status === 404 || putRes.status === 409) {
-                    await ensureFolders({ ...config, path }, headers);
-                    putRes = await put();
+                // 2. Envoyer les photos locales pas encore envoyées (avant le JSON,
+                //    pour qu'un autre appareil ne voie jamais une référence sans fichier)
+                for (const att of attachments) {
+                    const rec = await photoGet(att.id);
+                    if (!rec || rec.synced) continue;
+                    const res = await fetch(base + '/photo/' + encodeURIComponent(att.id), {
+                        method: 'PUT',
+                        headers: { ...auth, 'Content-Type': rec.type || 'application/octet-stream' },
+                        body: rec.blob
+                    });
+                    if (!res.ok) throw new HttpError(res.status);
+                    rec.synced = true;
+                    await photoPut(rec);
+                    sent++;
                 }
+
+                // 3. Envoyer le JSON (léger : sans photos ni configuration)
+                const putRes = await fetch(base + '/data', {
+                    method: 'PUT',
+                    headers: { ...auth, 'Content-Type': 'application/json' },
+                    body: JSON.stringify({
+                        version: 3,
+                        updatedAt: new Date().toISOString(),
+                        properties: store.properties,
+                        interventions: store.interventions,
+                        deletedIds: store.deletedIds
+                    })
+                });
                 if (!putRes.ok) throw new HttpError(putRes.status);
+
+                // 4. Supprimer du cloud les photos des interventions supprimées
+                const stillPending = [];
+                for (const id of store.pendingPhotoDeletes || []) {
+                    try {
+                        const res = await fetch(base + '/photo/' + encodeURIComponent(id), { method: 'DELETE', headers: auth });
+                        if (!res.ok) stillPending.push(id);
+                    } catch { stillPending.push(id); }
+                }
+                store.pendingPhotoDeletes = stillPending;
+                saveLocalStore();
+
+                // 5. Télécharger les photos qui viennent d'autres appareils
+                for (const att of attachments) {
+                    if (await photoGet(att.id)) continue;
+                    const res = await fetch(base + '/photo/' + encodeURIComponent(att.id), { method: 'GET', headers: auth });
+                    if (res.status === 404) { missing++; continue; }
+                    if (!res.ok) throw new HttpError(res.status);
+                    const blob = await res.blob();
+                    await photoPut({ id: att.id, name: att.name, type: att.type || blob.type, blob, synced: true });
+                    received++;
+                }
 
                 renderHistory();
                 renderStats();
                 renderProperties();
                 updatePropertyList();
-                const now = new Date().toLocaleString('fr-FR');
-                document.getElementById('lastSync').textContent = 'Dernière synchro réussie : ' + now;
-                if (silent !== true) showAlert('Synchronisation kDrive réussie !', 'bg-green-100 text-green-800');
+                document.getElementById('lastSync').textContent = 'Dernière synchro réussie : ' + new Date().toLocaleString('fr-FR');
+                if (silent !== true) {
+                    const details = [];
+                    if (sent) details.push(sent + ' photo(s) envoyée(s)');
+                    if (received) details.push(received + ' reçue(s)');
+                    if (missing) details.push(missing + ' introuvable(s) sur le cloud');
+                    showAlert('Synchronisation réussie !' + (details.length ? ' (' + details.join(', ') + ')' : ''), 'bg-green-100 text-green-800');
+                }
             } catch (err) {
                 console.error(err);
-                showAlert('Erreur kDrive : ' + esc(describeError(err)), 'bg-red-100 text-red-800');
+                showAlert('Erreur de synchro : ' + esc(describeError(err)), 'bg-red-100 text-red-800');
             } finally {
                 setSyncing(false);
             }
